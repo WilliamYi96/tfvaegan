@@ -1,0 +1,23 @@
+Traceback (most recent call last):
+  File "/home/yik/anaconda2/envs/tfvaegan-pt3/lib/python3.6/site-packages/scipy/io/matlab/mio.py", line 39, in _open_file
+    return open(file_like, mode), True
+FileNotFoundError: [Errno 2] No such file or directory: 'data/FLO/res101.mat'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "train_tfvaegan_inductive.py", line 34, in <module>
+    data = util.DATA_LOADER(opt)
+  File "/ibex/scratch/yik/tfvaegan/zero-shot-images/util.py", line 29, in __init__
+    self.read_matdataset(opt)
+  File "/ibex/scratch/yik/tfvaegan/zero-shot-images/util.py", line 34, in read_matdataset
+    matcontent = sio.loadmat(opt.dataroot + "/" + opt.dataset + "/" + opt.image_embedding + ".mat")
+  File "/home/yik/anaconda2/envs/tfvaegan-pt3/lib/python3.6/site-packages/scipy/io/matlab/mio.py", line 222, in loadmat
+    with _open_file_context(file_name, appendmat) as f:
+  File "/home/yik/anaconda2/envs/tfvaegan-pt3/lib/python3.6/contextlib.py", line 81, in __enter__
+    return next(self.gen)
+  File "/home/yik/anaconda2/envs/tfvaegan-pt3/lib/python3.6/site-packages/scipy/io/matlab/mio.py", line 17, in _open_file_context
+    f, opened = _open_file(file_like, appendmat, mode)
+  File "/home/yik/anaconda2/envs/tfvaegan-pt3/lib/python3.6/site-packages/scipy/io/matlab/mio.py", line 45, in _open_file
+    return open(file_like, mode), True
+FileNotFoundError: [Errno 2] No such file or directory: 'data/FLO/res101.mat'

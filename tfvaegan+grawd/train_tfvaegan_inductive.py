@@ -19,6 +19,16 @@ import model
 import util
 import classifier as classifier
 from config import opt
+from prototype_loss import compute_prototype_loss
+from rw_loss import compute_rw_real_loss, compute_rw_imitative_loss, compute_rw_creative_loss
+from sklearn.preprocessing import normalize
+# from firelab.config import Config
+
+# rw_config = Config.load(CHANGE_HERE, frozen=False)
+# rw_config.freeze()
+# print('<=========== Random Walk config ===========>')
+# print(rw_config)
+
 
 if opt.manualSeed is None:
     opt.manualSeed = random.randint(1, 10000)
@@ -32,8 +42,8 @@ if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 # load data
 data = util.DATA_LOADER(opt)
+# import pdb; pdb.set_trace();
 print("# of training samples: ", data.ntrain)
-print(str(opt))
 
 netE = model.Encoder(opt)
 netG = model.Generator(opt)
@@ -97,7 +107,7 @@ def generate_syn_feature(generator,classes, attribute,num,netF=None,netDec=None)
     for i in range(nclass):
         iclass = classes[i]
         iclass_att = attribute[iclass]
-        syn_att.copy_(iclass_att.repeat(num, 1))
+        syn_att.copy_(iclass_att.clone().repeat(num, 1))
         syn_noise.normal_(0, 1)
         syn_noisev = Variable(syn_noise,volatile=True)
         syn_attv = Variable(syn_att,volatile=True)
@@ -142,6 +152,58 @@ def calc_gradient_penalty(netD,real_data, fake_data, input_att):
 
 best_gzsl_acc = 0
 best_zsl_acc = 0
+
+
+class FeatDataLayer(object):
+    def __init__(self, label, feat_data, attribute, opt):
+        assert len(label) == feat_data.shape[0]
+        self._opt = opt
+        self._feat_data = feat_data
+        self._label = label
+        self._attribute = attribute        
+        self._shuffle_roidb_inds()
+
+    def _shuffle_roidb_inds(self):
+        """Randomly permute the training roidb."""
+        self._perm = np.random.permutation(np.arange(len(self._label)))
+        # self._perm = np.arange(len(self._roidb))
+        self._cur = 0
+
+    def _get_next_minibatch_inds(self):
+        """Return the roidb indices for the next minibatch."""
+
+        if self._cur + self._opt.batch_size >= len(self._label):
+            self._shuffle_roidb_inds()
+
+        db_inds = self._perm[self._cur:self._cur + self._opt.batch_size]
+        self._cur += self._opt.batch_size
+
+        return db_inds
+
+    def _get_next_minibatch(self):
+        """Return the blobs to be used for the next minibatch.
+        """
+        db_inds = self._get_next_minibatch_inds()
+        # import pdb; pdb.set_trace();
+        minibatch_feat = np.array([self._feat_data[i].numpy() for i in db_inds])
+        minibatch_label = np.array([self._label[i] for i in db_inds])
+        minibatch_att = np.array([self._attribute[self._label[i]].numpy() for i in db_inds])
+        blobs = {'data': minibatch_feat, 'labels': minibatch_label, 'att':minibatch_att}
+        return blobs
+
+    def forward(self):
+        """Get blobs and copy them into this layer's top blob vector."""
+        blobs = self._get_next_minibatch()
+        return blobs
+
+    def get_whole_data(self):
+        blobs = {'data': self._feat_data, 'labels': self._label}
+        return blobs
+
+# import pdb; pdb.set_trace();
+data_layer = FeatDataLayer(data.train_label, data.train_feature, data.attribute, opt)
+
+
 for epoch in range(0,opt.nepoch):
     for loop in range(0,opt.feedback_loop):
         for i in range(0, data.ntrain, opt.batch_size):
@@ -157,6 +219,7 @@ for epoch in range(0,opt.nepoch):
                 sample()
                 netD.zero_grad()          
                 input_resv = Variable(input_res)
+                # print(input_resv.size())
                 input_attv = Variable(input_att)
 
                 netDec.zero_grad()
@@ -164,6 +227,7 @@ for epoch in range(0,opt.nepoch):
                 R_cost = opt.recons_weight*WeightedL1(recons, input_attv) 
                 R_cost.backward()
                 optimizerDec.step()
+                # import pdb; pdb.set_trace();
                 criticD_real = netD(input_resv, input_attv)
                 criticD_real = opt.gammaD*criticD_real.mean()
                 criticD_real.backward(mone)
@@ -194,9 +258,40 @@ for epoch in range(0,opt.nepoch):
                 # if opt.lambda_mult == 1.1:
                 gp_sum += gradient_penalty.data
                 gradient_penalty.backward()         
+
+                # # Imitative fake RW loss for Discriminator
+                # discr_rw_imitative_walker_loss, discr_rw_imitative_visit_loss = compute_rw_imitative_loss(rw_config, data_layer, dataset, netD, netG)
+                # discr_rw_imitative_loss = discr_rw_imitative_walker_loss + rw_config.loss_weights.get('visit_loss', 1.0) * discr_rw_imitative_visit_loss
+                # discr_rw_imitative_loss = rw_config.loss_weights.discr.imitative * discr_rw_imitative_loss
+                # discr_rw_imitative_loss.backward()
+
+                # Imitative real RW loss for Discriminator
+                # discr_rw_real_walker_loss, discr_rw_real_visit_loss = compute_rw_real_loss(rw_config, data_layer, dataset, netD, netG)
+                # discr_rw_real_loss = discr_rw_real_walker_loss + rw_config.loss_weights.get('visit_loss', 1.0) * discr_rw_real_visit_loss
+                # discr_rw_real_loss = rw_config.loss_weights.discr.real * discr_rw_real_loss
+                # discr_rw_real_loss.backward()                
+
+
                 Wasserstein_D = criticD_real - criticD_fake
                 D_cost = criticD_fake - criticD_real + gradient_penalty #add Y here and #add vae reconstruction loss
                 optimizerD.step()
+
+            blobs = data_layer.forward()
+            labels = blobs['labels'].astype(int)
+            att_creative = Variable(torch.Tensor(blobs['att'].astype(float))).cuda()
+            text_feat_1 = np.array([data.train_feature[i, :].numpy() for i in labels])
+            text_feat_2 = np.array([data.train_feature[i, :].numpy() for i in labels])
+            np.random.shuffle(text_feat_1)  # Shuffle both features to guarantee different permutations
+            np.random.shuffle(text_feat_2)
+            alpha = (np.random.random(len(labels)) * (.8 - .2)) + .2
+            text_feat_mean = np.multiply(alpha, text_feat_1.transpose())
+            text_feat_mean += np.multiply(1. - alpha, text_feat_2.transpose())
+            text_feat_mean = text_feat_mean.transpose()
+            text_feat_mean = normalize(text_feat_mean, norm='l2', axis=1)
+            text_feat_Creative = Variable(torch.from_numpy(text_feat_mean.astype('float32'))).cuda()
+            z_creative = Variable(torch.randn(opt.batch_size, opt.nz)).cuda()
+            # import pdb; pdb.set_trace();
+            G_creative_sample = netG(z_creative, c=att_creative)
 
             gp_sum /= (opt.gammaD*opt.lambda1*opt.critic_iter)
             if (gp_sum > 1.05).sum() > 0:
@@ -248,7 +343,19 @@ for epoch in range(0,opt.nepoch):
                     fake = netG(noisev, a1=opt.a1, c=input_attv, feedback_layers=feedback_out)
                 else:
                     fake = netG(noisev, c=input_attv)
+                
                 criticG_fake = netD(fake,input_attv).mean()
+
+            # # Imitative RW loss for Generator
+            # gen_rw_imitative_walker_loss, gen_rw_imitative_visit_loss = compute_rw_imitative_loss(rw_config, data_layer, dataset, netD, netG)
+            # gen_rw_imitative_loss = gen_rw_imitative_walker_loss + rw_config.loss_weights.get('visit_loss', 1.0) * gen_rw_imitative_visit_loss
+            # gen_rw_imitative_loss = rw_config.loss_weights.gen.imitative * gen_rw_imitative_loss
+
+            # Creative RW loss for Generator
+            ## pass netD
+            gen_rw_creative_walker_loss, gen_rw_creative_visit_loss = compute_rw_creative_loss(opt, data, netD, G_creative_sample, netG, att_creative=att_creative)
+            gen_rw_creative_loss = gen_rw_creative_walker_loss + opt.rw_weight * gen_rw_creative_visit_loss
+            gen_rw_creative_loss = opt.creative_weight * gen_rw_creative_loss            
                 
 
             G_cost = -criticG_fake
@@ -257,6 +364,7 @@ for epoch in range(0,opt.nepoch):
             recons_fake = netDec(fake)
             R_cost = WeightedL1(recons_fake, input_attv)
             errG += opt.recons_weight * R_cost
+            errG += gen_rw_creative_loss
             errG.backward()
             # write a condition here
             optimizer.step()
@@ -266,7 +374,7 @@ for epoch in range(0,opt.nepoch):
             if opt.recons_weight > 0 and not opt.freeze_dec: # not train decoder at feedback time
                 optimizerDec.step() 
         
-    print('[%d/%d]  Loss_D: %.4f Loss_G: %.4f, Wasserstein_dist:%.4f, vae_loss_seen:%.4f'% (epoch, opt.nepoch, D_cost.data[0], G_cost.data[0], Wasserstein_D.data[0],vae_loss_seen.data[0]),end=" ")
+    print('[%d/%d]  Loss_D: %.4f Loss_G: %.4f, Wasserstein_dist:%.4f, vae_loss_seen:%.4f, gen_creative_loss:%.4f'% (epoch, opt.nepoch, D_cost.data[0], G_cost.data[0], Wasserstein_D.data[0],vae_loss_seen.data[0], gen_rw_creative_loss.data[0]),end=" ")
     netG.eval()
     netDec.eval()
     netF.eval()
